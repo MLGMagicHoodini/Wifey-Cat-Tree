@@ -27,6 +27,10 @@
   .name { font-weight:700; font-size:.95rem; line-height:1.15; }
   .meta { font-size:.75rem; color:#7a707f; margin-top:2px; }
   .breed { display:inline-block; margin-top:4px; font-size:.7rem; background:#f3ecf8; border-radius:20px; padding:1px 8px; }
+  #banner:not(:empty) { background:#fff3cd; padding:10px 20px; font-size:.9rem; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .noedit .cat { cursor:default; }
+  .noedit .cat:hover { transform:none; }
+  [hidden] { display:none !important; }
   .empty { text-align:center; padding:80px 20px; color:#7a707f; }
   dialog { border:0; border-radius:18px; padding:22px; width:min(420px,92vw); box-shadow:0 10px 40px rgba(0,0,0,.25); }
   dialog::backdrop { background:rgba(40,20,50,.4); }
@@ -41,15 +45,18 @@
 </head>
 <body>
 <header>
-  <h1>🐾 Cat Family Tree</h1>
+  <h1>🐾 Cat Family Tree <span id="status" class="hint" style="font-weight:400"></span></h1>
   <div class="btns">
     <button class="primary" id="addBtn">+ Add cat</button>
+    <button id="refreshBtn">↻ Refresh</button>
+    <button id="lockBtn"></button>
     <button id="exportBtn">Export</button>
     <button id="importBtn">Import</button>
     <input type="file" id="importFile" accept="application/json" hidden>
   </div>
 </header>
 
+<div id="banner"></div>
 <div id="scroll"><div id="tree"></div></div>
 
 <dialog id="dlg">
@@ -95,17 +102,105 @@ const KEY = 'catFamilyTree.v1';
 const CARD_W = 140, CARD_H = 175, GAP_X = 30, GAP_Y = 70;
 
 // ---------- data ----------
-let cats = load();
+let cats = [];
 function load() {
   try { const d = JSON.parse(localStorage.getItem(KEY)); if (Array.isArray(d)) return d; } catch (e) {}
-  return [
-    { id:'a1', first:'Luna', last:'Smith', sex:'f', breed:'Calico',  birth:'2015-04-12', death:'', photo:'', mother:'', father:'' },
-    { id:'a2', first:'Oliver', last:'Smith', sex:'m', breed:'Siamese', birth:'2014-09-03', death:'2024-01-20', photo:'', mother:'', father:'' },
-    { id:'a3', first:'Mochi', last:'Smith', sex:'f', breed:'Calico Siamese mix', birth:'2019-06-01', death:'', photo:'', mother:'a1', father:'a2' }
-  ];
+  return [];
 }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(cats)); } catch (e) { alert('Storage full — try smaller photos or use Export.'); } }
 const byId = id => cats.find(c => c.id === id);
+
+// ---------- storage: cats.json lives in this GitHub repo ----------
+// Blank = auto-detect from the github.io address. Fill in only for a custom domain.
+const REPO = { owner: '', repo: '', branch: 'main', path: 'cats.json' };
+(function () {
+  if (!REPO.owner && location.hostname.endsWith('.github.io')) {
+    REPO.owner = location.hostname.split('.')[0];
+    REPO.repo = location.pathname.split('/')[1] || location.hostname;
+  }
+})();
+const TOKEN_KEY = 'catTreeToken';
+const getToken = () => localStorage.getItem(TOKEN_KEY) || '';
+const canEdit = () => !!getToken();
+const setStatus = (txt) => { const s = document.getElementById('status'); if (s) s.textContent = txt; };
+const nowTxt = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const hdrs = raw => { const h = { Accept: raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json' }; if (getToken()) h.Authorization = 'Bearer ' + getToken(); return h; };
+const api = () => `https://api.github.com/repos/${REPO.owner}/${REPO.repo}/contents`;
+const b64 = s => { const b = new TextEncoder().encode(s); let o = ''; for (let i = 0; i < b.length; i += 0x8000) o += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(o); };
+let remoteExists = null;
+
+async function fetchRemote() {
+  if (!REPO.owner) throw new Error('Repo not detected');
+  const r = await fetch(`${api()}/${REPO.path}?ref=${REPO.branch}&t=${Date.now()}`, { headers: hdrs(true), cache: 'no-store' });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).message || r.status);
+  return r.json();
+}
+async function getSha() {
+  const r = await fetch(`${api()}?ref=${REPO.branch}&t=${Date.now()}`, { headers: hdrs(false), cache: 'no-store' });
+  if (!r.ok) throw new Error('Could not read repo');
+  const f = (await r.json()).find(x => x.name === REPO.path);
+  return f ? f.sha : null;
+}
+// Apply one change on top of the newest cats.json, so two people editing don't overwrite each other.
+async function commit(fn, msg) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const latest = (await fetchRemote()) || [];
+    const next = fn(latest.slice());
+    const sha = await getSha();
+    const body = { message: msg, content: b64(JSON.stringify(next, null, 1)), branch: REPO.branch };
+    if (sha) body.sha = sha;
+    const r = await fetch(`${api()}/${REPO.path}`, { method: 'PUT', headers: { ...hdrs(false), 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (r.ok) { cats = next; remoteExists = true; setStatus('✓ saved ' + nowTxt()); render(); updateBanner(); return; }
+    if (r.status === 409 || r.status === 422) continue;
+    throw new Error((await r.json().catch(() => ({}))).message || r.status);
+  }
+  throw new Error('Someone else saved at the same moment — please try again');
+}
+const run = p => p.catch(e => { alert('Could not save: ' + e.message); setStatus('⚠ not saved'); });
+const upsert = (list, c) => { const i = list.findIndex(x => x.id === c.id); if (i >= 0) list[i] = c; else list.push(c); return list; };
+
+async function refresh() {
+  try {
+    const data = await fetchRemote();
+    remoteExists = data !== null;
+    cats = remoteExists ? data : load();
+    setStatus(remoteExists ? '✓ synced ' + nowTxt() : 'not published yet');
+  } catch (e) {
+    setStatus('⚠ offline — showing last copy');
+    if (!cats.length) { cats = load(); remoteExists = remoteExists ?? null; }
+  }
+  render(); updateBanner();
+}
+const store = {
+  start() {
+    refresh();
+    const again = () => { if (!document.hidden && !document.getElementById('dlg').open) refresh(); };
+    setInterval(again, 120000);
+    document.addEventListener('visibilitychange', again);
+  },
+  put(c) { return run(commit(l => upsert(l, c), 'Update ' + c.first)); },
+  putMany(arr) { return run(commit(l => { arr.forEach(c => upsert(l, c)); return l; }, 'Import cats')); },
+  del(id) {
+    return run(commit(l => l.filter(c => c.id !== id).map(c => ({ ...c, mother: c.mother === id ? '' : c.mother, father: c.father === id ? '' : c.father })), 'Remove a cat'));
+  }
+};
+
+function updateBanner() {
+  const b = document.getElementById('banner'), local = load();
+  if (remoteExists === false && local.length) {
+    b.innerHTML = 'Your tree is only in this browser so far. ' + (canEdit() ? '<button class="primary" id="pubBtn">Publish it to GitHub</button>' : 'Unlock editing, then publish it so others can see it.');
+    const p = document.getElementById('pubBtn'); if (p) p.onclick = () => store.putMany(local);
+  } else b.innerHTML = '';
+}
+function applyMode() {
+  const ed = canEdit();
+  document.body.classList.toggle('noedit', !ed);
+  document.getElementById('addBtn').hidden = !ed;
+  document.getElementById('importBtn').hidden = !ed;
+  document.getElementById('lockBtn').textContent = ed ? '🔓 Editing on' : '🔑 Unlock editing';
+  updateBanner();
+}
 
 // ---------- age ----------
 function ageText(c) {
@@ -202,7 +297,7 @@ function render() {
   tree.innerHTML = svg + html;
 }
 document.getElementById('tree').addEventListener('click', e => {
-  const el = e.target.closest('.cat'); if (el) openDlg(el.dataset.id);
+  const el = e.target.closest('.cat'); if (el && canEdit()) openDlg(el.dataset.id);
 });
 
 // ---------- dialog ----------
@@ -258,14 +353,12 @@ $('form').addEventListener('submit', e => {
   if ($('death').value && $('birth').value && $('death').value < $('birth').value) { e.preventDefault(); alert('Death date is before birth date 🙀'); return; }
   const data = { first:$('first').value.trim(), last:$('last').value.trim(), sex:$('sex').value, breed:$('breed').value.trim(),
     birth:$('birth').value, death:$('death').value, photo:photoData, mother:$('mother').value, father:$('father').value };
-  if (editing) Object.assign(editing, data); else cats.push({ id: 'c'+Date.now().toString(36), ...data });
-  save(); render();
+  const id = editing ? editing.id : 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  store.put({ id, ...data });
 });
 $('delBtn').onclick = () => {
   if (!confirm(`Delete ${editing.first}?`)) return;
-  cats = cats.filter(c => c.id !== editing.id);
-  cats.forEach(c => { if (c.mother === editing.id) c.mother = ''; if (c.father === editing.id) c.father = ''; });
-  save(); render(); $('dlg').close();
+  store.del(editing.id); $('dlg').close();
 };
 
 // ---------- export / import ----------
@@ -278,13 +371,19 @@ $('importBtn').onclick = () => $('importFile').click();
 $('importFile').onchange = e => {
   const f = e.target.files[0]; if (!f) return;
   f.text().then(t => {
-    try { const d = JSON.parse(t); if (!Array.isArray(d)) throw 0; cats = d; save(); render(); }
+    try { const d = JSON.parse(t); if (!Array.isArray(d)) throw 0; store.putMany(d); }
     catch { alert('That file doesn\'t look like a cat tree export.'); }
   });
   e.target.value = '';
 };
 
-render();
+$('refreshBtn').onclick = () => refresh();
+$('lockBtn').onclick = () => {
+  if (canEdit()) { if (confirm('Turn editing off on this device?')) { localStorage.removeItem(TOKEN_KEY); applyMode(); } }
+  else { const t = prompt('Paste your GitHub token (it stays only in this browser):'); if (t && t.trim()) { localStorage.setItem(TOKEN_KEY, t.trim()); applyMode(); refresh(); } }
+};
+applyMode();
+store.start();
 </script>
 </body>
 </html>
