@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cat Family Tree</title>
+<style>
+  :root { --blue:#6aa9ff; --pink:#ff8fc0; --ink:#3a3340; --bg:#fff8f3; --card:#fff; --line:#c9b8d6; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,sans-serif; background:var(--bg); color:var(--ink); }
+  header { display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:space-between; padding:14px 20px; background:#fff; border-bottom:1px solid #eee; position:sticky; top:0; z-index:10; }
+  h1 { font-size:1.3rem; margin:0; }
+  .btns { display:flex; gap:8px; flex-wrap:wrap; }
+  button { font:inherit; border:0; border-radius:10px; padding:8px 14px; cursor:pointer; background:#eee; color:var(--ink); }
+  button.primary { background:var(--pink); color:#fff; font-weight:600; }
+  button.danger { background:#ffe1e1; color:#b00020; }
+  #scroll { overflow:auto; padding:30px 20px 60px; }
+  #tree { position:relative; margin:0 auto; }
+  #lines { position:absolute; left:0; top:0; pointer-events:none; }
+  .cat { position:absolute; width:140px; text-align:center; background:var(--card); border-radius:16px; padding:10px 8px 12px; box-shadow:0 2px 10px rgba(0,0,0,.08); cursor:pointer; transition:transform .15s; }
+  .cat:hover { transform:translateY(-3px); }
+  .avatar { width:76px; height:76px; border-radius:50%; margin:0 auto 6px; border:4px solid var(--blue); overflow:hidden; background:#eef5ff; display:flex; align-items:center; justify-content:center; }
+  .cat.f .avatar { border-color:var(--pink); background:#fff0f7; }
+  .avatar img { width:100%; height:100%; object-fit:cover; }
+  .avatar svg { width:80%; height:80%; }
+  .cat.gone .avatar { filter:grayscale(.6); }
+  .name { font-weight:700; font-size:.95rem; line-height:1.15; }
+  .meta { font-size:.75rem; color:#7a707f; margin-top:2px; }
+  .breed { display:inline-block; margin-top:4px; font-size:.7rem; background:#f3ecf8; border-radius:20px; padding:1px 8px; }
+  .empty { text-align:center; padding:80px 20px; color:#7a707f; }
+  dialog { border:0; border-radius:18px; padding:22px; width:min(420px,92vw); box-shadow:0 10px 40px rgba(0,0,0,.25); }
+  dialog::backdrop { background:rgba(40,20,50,.4); }
+  label { display:block; font-size:.8rem; font-weight:600; margin:10px 0 3px; }
+  input, select { width:100%; font:inherit; padding:8px 10px; border:1px solid #ddd; border-radius:10px; }
+  .row { display:flex; gap:10px; } .row > div { flex:1; }
+  .photo-pick { display:flex; align-items:center; gap:14px; }
+  #photoPreview { width:84px; height:84px; flex:none; cursor:pointer; }
+  .actions { display:flex; justify-content:space-between; gap:8px; margin-top:18px; }
+  .hint { font-size:.75rem; color:#9a8fa0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🐾 Cat Family Tree</h1>
+  <div class="btns">
+    <button class="primary" id="addBtn">+ Add cat</button>
+    <button id="exportBtn">Export</button>
+    <button id="importBtn">Import</button>
+    <input type="file" id="importFile" accept="application/json" hidden>
+  </div>
+</header>
+
+<div id="scroll"><div id="tree"></div></div>
+
+<dialog id="dlg">
+  <form method="dialog" id="form">
+    <h2 id="dlgTitle" style="margin:0 0 6px">Add cat</h2>
+    <div class="photo-pick">
+      <div id="photoPreview" class="avatar" title="Click to choose photo"></div>
+      <div>
+        <button type="button" id="photoBtn">Choose photo</button>
+        <button type="button" id="photoClear">Remove</button>
+        <div class="hint">Optional. Shows a cat icon if empty.</div>
+      </div>
+      <input type="file" id="photoFile" accept="image/*" hidden>
+    </div>
+    <div class="row">
+      <div><label>First name</label><input id="first" required></div>
+      <div><label>Last name</label><input id="last"></div>
+    </div>
+    <div class="row">
+      <div><label>Sex</label>
+        <select id="sex"><option value="m">Male (blue)</option><option value="f">Female (pink)</option></select></div>
+      <div><label>Breed</label><input id="breed" placeholder="Calico, Siamese…"></div>
+    </div>
+    <div class="row">
+      <div><label>Birthday</label><input type="date" id="birth"></div>
+      <div><label>Died</label><input type="date" id="death"></div>
+    </div>
+    <div class="row">
+      <div><label>Mother</label><select id="mother"></select></div>
+      <div><label>Father</label><select id="father"></select></div>
+    </div>
+    <div class="actions">
+      <button type="button" class="danger" id="delBtn">Delete</button>
+      <span style="flex:1"></span>
+      <button type="button" id="cancelBtn">Cancel</button>
+      <button class="primary" id="saveBtn" value="save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const KEY = 'catFamilyTree.v1';
+const CARD_W = 140, CARD_H = 175, GAP_X = 30, GAP_Y = 70;
+
+// ---------- data ----------
+let cats = load();
+function load() {
+  try { const d = JSON.parse(localStorage.getItem(KEY)); if (Array.isArray(d)) return d; } catch (e) {}
+  return [
+    { id:'a1', first:'Luna', last:'Smith', sex:'f', breed:'Calico',  birth:'2015-04-12', death:'', photo:'', mother:'', father:'' },
+    { id:'a2', first:'Oliver', last:'Smith', sex:'m', breed:'Siamese', birth:'2014-09-03', death:'2024-01-20', photo:'', mother:'', father:'' },
+    { id:'a3', first:'Mochi', last:'Smith', sex:'f', breed:'Calico Siamese mix', birth:'2019-06-01', death:'', photo:'', mother:'a1', father:'a2' }
+  ];
+}
+function save() { try { localStorage.setItem(KEY, JSON.stringify(cats)); } catch (e) { alert('Storage full — try smaller photos or use Export.'); } }
+const byId = id => cats.find(c => c.id === id);
+
+// ---------- age ----------
+function ageText(c) {
+  if (!c.birth) return '';
+  const b = new Date(c.birth), e = c.death ? new Date(c.death) : new Date();
+  if (isNaN(b) || e < b) return '';
+  let m = (e.getFullYear()-b.getFullYear())*12 + e.getMonth()-b.getMonth();
+  if (e.getDate() < b.getDate()) m--;
+  const y = Math.floor(m/12), mo = m%12;
+  let s = y ? `${y}y${mo ? ' '+mo+'m' : ''}` : (m ? `${m} mo` : '<1 mo');
+  return c.death ? `lived ${s}` : `age ${s}`;
+}
+const fmt = d => d ? new Date(d+'T00:00').toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'}) : '';
+
+// ---------- icon ----------
+function catIcon(sex) {
+  const col = sex === 'f' ? '#ff8fc0' : '#6aa9ff';
+  return `<svg viewBox="0 0 64 64"><path d="M10 8l12 10h20l12-10v26c0 12-10 22-22 22S10 46 10 34z" fill="${col}"/>
+  <circle cx="24" cy="32" r="3" fill="#fff"/><circle cx="40" cy="32" r="3" fill="#fff"/>
+  <path d="M29 40h6l-3 3z" fill="#fff"/><path d="M32 43v3M26 47q3 2 6-1 3 3 6 1" stroke="#fff" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>`;
+}
+const esc = s => String(s||'').replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
+
+// ---------- layout ----------
+function layout() {
+  const level = {}, visiting = new Set();
+  function lv(c) {
+    if (level[c.id] != null) return level[c.id];
+    if (visiting.has(c.id)) return 0;
+    visiting.add(c.id);
+    const ps = [byId(c.mother), byId(c.father)].filter(Boolean);
+    level[c.id] = ps.length ? Math.max(...ps.map(lv)) + 1 : 0;
+    visiting.delete(c.id);
+    return level[c.id];
+  }
+  cats.forEach(lv);
+  // parentless cats with children sit just above their lowest child
+  cats.forEach(c => {
+    if (!byId(c.mother) && !byId(c.father)) {
+      const kids = cats.filter(k => k.mother === c.id || k.father === c.id);
+      if (kids.length) level[c.id] = Math.max(0, Math.min(...kids.map(k => level[k.id])) - 1);
+    }
+  });
+  const maxL = Math.max(0, ...Object.values(level));
+  const pos = {};
+  for (let l = 0; l <= maxL; l++) {
+    const row = cats.filter(c => level[c.id] === l).map(c => {
+      const px = [byId(c.mother), byId(c.father)].filter(p => p && pos[p.id]).map(p => pos[p.id].x);
+      return { c, want: px.length ? px.reduce((a,b)=>a+b)/px.length : null };
+    });
+    row.sort((a,b) => (a.want ?? 1e9) - (b.want ?? 1e9));
+    let x = CARD_W/2;
+    row.forEach(r => {
+      x = Math.max(r.want ?? x, x);
+      pos[r.c.id] = { x, y: l*(CARD_H+GAP_Y) };
+      x += CARD_W + GAP_X;
+    });
+  }
+  return pos;
+}
+
+// ---------- render ----------
+function render() {
+  const tree = document.getElementById('tree');
+  if (!cats.length) { tree.style.cssText=''; tree.innerHTML = '<div class="empty">No cats yet — click “+ Add cat” 🐱</div>'; return; }
+  const pos = layout();
+  const W = Math.max(...Object.values(pos).map(p => p.x)) + CARD_W/2 + 10;
+  const H = Math.max(...Object.values(pos).map(p => p.y)) + CARD_H + 10;
+  tree.style.width = W+'px'; tree.style.height = H+'px';
+
+  let svg = `<svg id="lines" width="${W}" height="${H}">`;
+  cats.forEach(c => {
+    const p = pos[c.id];
+    [c.mother, c.father].forEach(pid => {
+      const pp = pos[pid]; if (!pp) return;
+      const x1 = pp.x, y1 = pp.y + CARD_H, x2 = p.x, y2 = p.y, my = (y1+y2)/2;
+      const col = byId(pid).sex === 'f' ? '#ff8fc0' : '#6aa9ff';
+      svg += `<path d="M${x1} ${y1} C${x1} ${my}, ${x2} ${my}, ${x2} ${y2}" stroke="${col}" stroke-width="2.5" fill="none" opacity=".75"/>`;
+    });
+  });
+  svg += '</svg>';
+
+  const html = cats.map(c => {
+    const p = pos[c.id];
+    const av = c.photo ? `<img src="${c.photo}" alt="">` : catIcon(c.sex);
+    const dates = [c.birth ? '★ '+fmt(c.birth) : '', c.death ? '✝ '+fmt(c.death) : ''].filter(Boolean).join('<br>');
+    return `<div class="cat ${c.sex} ${c.death?'gone':''}" data-id="${c.id}" style="left:${p.x-CARD_W/2}px;top:${p.y}px;height:${CARD_H}px">
+      <div class="avatar">${av}</div>
+      <div class="name">${esc(c.first)} ${esc(c.last)}</div>
+      <div class="meta">${dates}${dates?'<br>':''}${ageText(c)}</div>
+      ${c.breed ? `<span class="breed">${esc(c.breed)}</span>` : ''}
+    </div>`;
+  }).join('');
+  tree.innerHTML = svg + html;
+}
+document.getElementById('tree').addEventListener('click', e => {
+  const el = e.target.closest('.cat'); if (el) openDlg(el.dataset.id);
+});
+
+// ---------- dialog ----------
+const $ = id => document.getElementById(id);
+let editing = null, photoData = '';
+
+function descendants(id, seen = new Set()) {
+  cats.filter(k => k.mother === id || k.father === id).forEach(k => { if (!seen.has(k.id)) { seen.add(k.id); descendants(k.id, seen); } });
+  return seen;
+}
+function fillParents(selfId, mom, dad) {
+  const banned = new Set([selfId, ...(selfId ? descendants(selfId) : [])]);
+  const opts = sex => '<option value="">— unknown —</option>' +
+    cats.filter(c => c.sex === sex && !banned.has(c.id)).map(c => `<option value="${c.id}">${esc(c.first)} ${esc(c.last)}</option>`).join('');
+  $('mother').innerHTML = opts('f'); $('father').innerHTML = opts('m');
+  $('mother').value = mom || ''; $('father').value = dad || '';
+}
+function updatePreview() {
+  $('photoPreview').className = 'avatar';
+  $('photoPreview').style.borderColor = $('sex').value === 'f' ? 'var(--pink)' : 'var(--blue)';
+  $('photoPreview').innerHTML = photoData ? `<img src="${photoData}" alt="">` : catIcon($('sex').value);
+}
+function openDlg(id) {
+  editing = id ? byId(id) : null;
+  const c = editing || { first:'', last:'', sex:'f', breed:'', birth:'', death:'', photo:'', mother:'', father:'' };
+  $('dlgTitle').textContent = editing ? 'Edit cat' : 'Add cat';
+  $('first').value = c.first; $('last').value = c.last; $('sex').value = c.sex; $('breed').value = c.breed;
+  $('birth').value = c.birth; $('death').value = c.death;
+  photoData = c.photo || '';
+  fillParents(editing?.id, c.mother, c.father);
+  $('delBtn').style.display = editing ? '' : 'none';
+  updatePreview();
+  $('dlg').showModal();
+}
+$('addBtn').onclick = () => openDlg();
+$('cancelBtn').onclick = () => $('dlg').close();
+$('sex').onchange = updatePreview;
+$('photoBtn').onclick = $('photoPreview').onclick = () => $('photoFile').click();
+$('photoClear').onclick = () => { photoData = ''; updatePreview(); };
+$('photoFile').onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  const img = new Image(), url = URL.createObjectURL(f);
+  img.onload = () => {
+    const s = 240, cv = document.createElement('canvas'); cv.width = cv.height = s;
+    const m = Math.min(img.width, img.height);
+    cv.getContext('2d').drawImage(img, (img.width-m)/2, (img.height-m)/2, m, m, 0, 0, s, s);
+    photoData = cv.toDataURL('image/jpeg', .85); URL.revokeObjectURL(url); updatePreview();
+  };
+  img.src = url; e.target.value = '';
+};
+$('form').addEventListener('submit', e => {
+  if (e.submitter?.id !== 'saveBtn') return;
+  if ($('death').value && $('birth').value && $('death').value < $('birth').value) { e.preventDefault(); alert('Death date is before birth date 🙀'); return; }
+  const data = { first:$('first').value.trim(), last:$('last').value.trim(), sex:$('sex').value, breed:$('breed').value.trim(),
+    birth:$('birth').value, death:$('death').value, photo:photoData, mother:$('mother').value, father:$('father').value };
+  if (editing) Object.assign(editing, data); else cats.push({ id: 'c'+Date.now().toString(36), ...data });
+  save(); render();
+});
+$('delBtn').onclick = () => {
+  if (!confirm(`Delete ${editing.first}?`)) return;
+  cats = cats.filter(c => c.id !== editing.id);
+  cats.forEach(c => { if (c.mother === editing.id) c.mother = ''; if (c.father === editing.id) c.father = ''; });
+  save(); render(); $('dlg').close();
+};
+
+// ---------- export / import ----------
+$('exportBtn').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(cats, null, 2)], { type:'application/json' }));
+  a.download = 'cats.json'; a.click();
+};
+$('importBtn').onclick = () => $('importFile').click();
+$('importFile').onchange = e => {
+  const f = e.target.files[0]; if (!f) return;
+  f.text().then(t => {
+    try { const d = JSON.parse(t); if (!Array.isArray(d)) throw 0; cats = d; save(); render(); }
+    catch { alert('That file doesn\'t look like a cat tree export.'); }
+  });
+  e.target.value = '';
+};
+
+render();
+</script>
+</body>
+</html>
